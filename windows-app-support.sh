@@ -2,8 +2,21 @@
 set -e
 
 # ===== Detect distro & language =====
-source /etc/os-release
-distro=$ID
+if [ -f /etc/os-release ]; then
+    source /etc/os-release
+    distro=$ID
+else
+    echo "[ERROR] Could not detect your Linux distribution."
+    exit 1
+fi
+
+# Normalize distro names
+case "$distro" in
+    rhel|centos|almalinux|rocky) distro="fedora";;
+    neon|kubuntu|xubuntu|lubuntu|ubuntu-budgie) distro="ubuntu";;
+    endeavouros) distro="arch";;
+esac
+
 lang="${LANG%%_*}"
 
 # ===== Multi-language strings =====
@@ -23,6 +36,9 @@ translate() {
             t_drag_msg="Arraste um programa (.exe/.msi) para instalar:"
             t_bottles="Instalar via Bottles"
             t_wine="Instalar via Wine"
+            t_cancel="Cancelar"
+            t_success="Pronto! Suporte a aplicativos Windows está configurado."
+            t_flatpak_info="Configurando Flatpak e Flathub..."
             ;;
         es)
             t_title="Soporte de Aplicaciones Windows"
@@ -38,6 +54,9 @@ translate() {
             t_drag_msg="Arrastre un programa (.exe/.msi) para instalar:"
             t_bottles="Instalar con Bottles"
             t_wine="Instalar con Wine"
+            t_cancel="Cancelar"
+            t_success="¡Listo! El soporte de aplicaciones Windows está configurado."
+            t_flatpak_info="Configurando Flatpak y Flathub..."
             ;;
         fr)
             t_title="Support des Applications Windows"
@@ -53,6 +72,9 @@ translate() {
             t_drag_msg="Glissez un programme (.exe/.msi) pour installer:"
             t_bottles="Installer via Bottles"
             t_wine="Installer via Wine"
+            t_cancel="Annuler"
+            t_success="Fait ! Le support des applications Windows est configuré."
+            t_flatpak_info="Configuration de Flatpak et Flathub..."
             ;;
         de)
             t_title="Windows-Anwendungsunterstützung"
@@ -68,6 +90,9 @@ translate() {
             t_drag_msg="Ziehen Sie ein Programm (.exe/.msi) hierher, um es zu installieren:"
             t_bottles="Installieren mit Bottles"
             t_wine="Installieren mit Wine"
+            t_cancel="Abbrechen"
+            t_success="Fertig! Windows-Anwendungsunterstützung ist konfiguriert."
+            t_flatpak_info="Konfiguriere Flatpak und Flathub..."
             ;;
         *)
             t_title="Windows Applications Support"
@@ -76,13 +101,16 @@ translate() {
             t_uninstall="Uninstall"
             t_nothing="Do nothing"
             t_installing="[INFO] Installing Wine, Flatpak, Bottles and creating launcher/menu..."
-            t_installed="[INFO] Installation completed!"
+            t_installed="[INFO] Installation completed successfully!"
             t_uninstalling="[INFO] Uninstalling Wine, Flatpak, Bottles and removing launcher/menu..."
             t_uninstalled="[INFO] Uninstallation completed!"
             t_canceled="No action performed."
             t_drag_msg="Drag a program (.exe/.msi) to install:"
             t_bottles="Install via Bottles"
             t_wine="Install via Wine"
+            t_cancel="Cancel"
+            t_success="Done! Windows app support is ready."
+            t_flatpak_info="Installing Flatpak and Flathub repository..."
             ;;
     esac
 }
@@ -90,25 +118,72 @@ translate
 
 # ===== Install packages by distro =====
 install_packages() {
+    echo "[INFO] Detecting package manager..."
+
     case "$distro" in
-        ubuntu|linuxmint|debian)
+        ubuntu|linuxmint|debian|elementary|pop)
+            echo "[INFO] Debian/Ubuntu-based system detected"
             sudo apt update
-            sudo apt install -y wine winetricks flatpak kdialog icoutils wget desktop-file-utils
+            sudo apt install -y wine wine32 wine64 winetricks flatpak kdialog icoutils wget desktop-file-utils cabextract
             ;;
-        fedora)
-            sudo dnf install -y wine winetricks flatpak kdialog icoutils desktop-file-utils
+        fedora|rhel|centos|almalinux|rocky)
+            echo "[INFO] RedHat-based system detected"
+            sudo dnf install -y wine winetricks flatpak kdialog icoutils desktop-file-utils cabextract glibc-devel.i686
             ;;
         opensuse*|suse)
-            sudo zypper --non-interactive install wine winetricks wine-mono wine-gecko flatpak kdialog icoutils desktop-file-utils
+            echo "[INFO] openSUSE detected"
+            sudo zypper --non-interactive install wine winetricks wine-mono wine-gecko flatpak kdialog icoutils desktop-file-utils cabextract
             ;;
-        arch|manjaro|endeavouros)
-            sudo pacman -Sy --noconfirm wine winetricks flatpak kdialog icoutils desktop-file-utils
+        arch|manjaro|endeavouros|garuda)
+            echo "[INFO] Arch-based system detected"
+            sudo pacman -Sy --noconfirm wine winetricks flatpak kdialog icoutils desktop-file-utils cabextract
+            ;;
+        gentoo)
+            echo "[INFO] Gentoo detected"
+            sudo emerge --ask=n app-emulation/wine app-portage/gentoolkit flatpak kde-apps/kdialog
+            ;;
+        void)
+            echo "[INFO] Void Linux detected"
+            sudo xbps-install -S -u xbps || true
+            sudo xbps-install -y wine winetricks flatpak icoutils desktop-file-utils cabextract
+            ;;
+        nixos)
+            echo "[INFO] NixOS detected - using Flake or nix-shell"
+            echo "[WARNING] Please use NixOS flakes or nix-shell for Wine environment"
             ;;
         *)
-            echo "[ERROR] Unsupported distro. Install Wine, Winetricks, Flatpak, KDialog manually."
-            exit 1
+            echo "[WARNING] Unknown Linux distribution: $distro"
+            echo "[INFO] Attempting generic installation..."
+            if command -v apt &>/dev/null; then
+                sudo apt install -y wine winetricks flatpak kdialog icoutils desktop-file-utils cabextract
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install -y wine winetricks flatpak kdialog icoutils desktop-file-utils cabextract
+            elif command -v pacman &>/dev/null; then
+                sudo pacman -Sy --noconfirm wine winetricks flatpak kdialog icoutils desktop-file-utils cabextract
+            else
+                echo "[ERROR] Could not find a supported package manager."
+                echo "[INFO] Please install wine, winetricks, flatpak, kdialog manually."
+                exit 1
+            fi
             ;;
     esac
+}
+
+# ===== Setup Flatpak and Flathub =====
+setup_flatpak_flathub() {
+    echo "[INFO] $t_flatpak_info"
+
+    # Add Flathub remote
+    if ! flatpak remote-list | grep -q flathub; then
+        echo "[INFO] Adding Flathub repository..."
+        flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+    fi
+
+    # Install Bottles from Flathub
+    echo "[INFO] Installing Bottles..."
+    flatpak install --user -y flathub com.usebottles.bottles 2>/dev/null || \
+    flatpak install --system -y flathub com.usebottles.bottles 2>/dev/null || \
+    echo "[WARNING] Could not install Bottles from Flathub"
 }
 
 # ===== Create drag & drop launcher and .desktop =====
@@ -211,10 +286,10 @@ case "$MAIN_CHOICE" in
     1)
         echo "$t_installing"
         install_packages
-        flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo || true
-        flatpak install --user -y flathub com.usebottles.bottles || true
+        setup_flatpak_flathub
         create_drag_drop_launcher
         echo "$t_installed"
+        kdialog --title "$t_title" --msgbox "$t_success" 2>/dev/null || true
         ;;
     2)
         echo "$t_uninstalling"
